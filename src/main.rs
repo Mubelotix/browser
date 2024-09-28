@@ -4,7 +4,7 @@ use gtk::glib::FileError;
 use gtk::{prelude::*, Entry, Box, Orientation, Window, WindowType};
 use libipld::Cid;
 use reqwest::Client;
-use webkit2gtk::{SettingsExt, URISchemeRequest, URISchemeRequestExt, WebContext, WebContextExt, WebView, WebViewExt};
+use webkit2gtk::{SecurityManagerExt, SettingsExt, URISchemeRequest, URISchemeRequestExt, WebContext, WebContextExt, WebView, WebViewExt};
 use webkit2gtk::{UserContentManager, WebViewExtManual};
 use webkit2gtk::{glib, gio};
 
@@ -109,6 +109,9 @@ async fn main() {
     context.set_web_extensions_directory("../webkit2gtk-webextension-rs/example/target/debug/");
     context.register_uri_scheme("ipfs", serve_ipfs);
     context.register_uri_scheme("ipns", serve_ipns);
+    let security_manager = context.security_manager().unwrap();
+    security_manager.register_uri_scheme_as_secure("ipfs");
+    security_manager.register_uri_scheme_as_secure("ipns");
     let webview = WebView::new_with_context_and_user_content_manager(&context, &UserContentManager::new());
     webview.load_uri("ipfs://QmbsGZ999Xk757uSGFMbFW2xW4F21CbGvmpx8A5JwP5Y5s");
 
