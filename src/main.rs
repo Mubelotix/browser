@@ -1,17 +1,96 @@
+use std::sync::LazyLock;
+use gtk::gio::MemoryInputStream;
+use gtk::glib::FileError;
 use gtk::{prelude::*, Entry, Box, Orientation, Window, WindowType};
+use libipld::Cid;
+use reqwest::Client;
 use webkit2gtk::{SettingsExt, URISchemeRequest, URISchemeRequestExt, WebContext, WebContextExt, WebView, WebViewExt};
 use webkit2gtk::{UserContentManager, WebViewExtManual};
 use webkit2gtk::{glib, gio};
 
-fn serve_ipfs(request: &URISchemeRequest) {
-    println!("test");
-    let uri = request.uri().unwrap();
-    let hash = &uri[7..];
-    let webview = request.web_view().unwrap();
-    webview.load_uri(format!("https://gateway.ipfs.io/ipfs/{}", hash).as_str());
+static CLIENT: LazyLock<Client> = LazyLock::new(|| {
+    Client::new()
+});
+
+// The guys from Tauri do it so I guess it's safe
+// https://github.com/tauri-apps/wry/blob/eafaadb9b35f74f07ef83da3d3e738c9ae631f7c/src/webkitgtk/web_context.rs#L359
+struct UriSchemeRequestSafe(URISchemeRequest);
+unsafe impl Send for UriSchemeRequestSafe {}
+unsafe impl Sync for UriSchemeRequestSafe {}
+
+impl UriSchemeRequestSafe {
+    fn finish_error(&self, error: &mut webkit2gtk::Error) {
+        self.0.finish_error(error);
+    }
+
+    fn finish(&self, stream: &impl IsA<gio::InputStream>, stream_length: i64, content_type: Option<&str>) {
+        self.0.finish(stream, stream_length, content_type);
+    }
 }
 
-fn main() {
+fn serve_other_url(request: &URISchemeRequest, url: String) {
+    let request = UriSchemeRequestSafe(request.clone());
+    tokio::spawn(async move {
+        // TODO: Pass useful headers like range, etc.
+        
+        let response = CLIENT.get(url).send().await;
+        let response = match response {
+            Ok(response) => response,
+            Err(error) => {
+                let mut webkit_error = webkit2gtk::Error::new(FileError::Failed, &format!("{error}: {error:?}"));
+                request.finish_error(&mut webkit_error);
+                return;
+            }
+        };
+
+        // TODO: Someday we might be able to implement PollableInputStream and use streams
+        // let stream = response.bytes_stream();
+
+        let content_type = response.headers().get("content-type").and_then(|value| value.to_str().ok()).map(|s| s.to_string());
+        let bytes = match response.bytes().await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                let mut webkit_error = webkit2gtk::Error::new(FileError::Failed, &format!("{error}: {error:?}"));
+                request.finish_error(&mut webkit_error);
+                return;
+            }
+        };
+        let len = bytes.len() as i64;
+        let input_stream = MemoryInputStream::from_bytes(&glib::Bytes::from_owned(bytes));
+
+        request.finish(&input_stream, len, content_type.as_deref());
+    });
+}
+
+fn serve_ipfs(request: &URISchemeRequest) {
+    let uri = request.uri().unwrap_or_default();
+    let value = match uri.starts_with("ipfs://") {
+        true => uri[7..].to_string(),
+        false => uri.to_string(),
+    };
+    let (cid, path) = value.split_once('/').unwrap_or((value.as_str(), ""));
+    let cid = match Cid::try_from(cid) {
+        Ok(cid) => cid,
+        Err(error) => {
+            let mut webkit_error = webkit2gtk::Error::new(FileError::Failed, &format!("{error}: {error:?}"));
+            request.finish_error(&mut webkit_error);
+            return;
+        }
+    };
+    let cid = match cid.into_v1() {
+        Ok(cid_v1) => cid_v1,
+        Err(error) => {
+            let mut webkit_error = webkit2gtk::Error::new(FileError::Failed, &format!("{error}: {error:?}"));
+            request.finish_error(&mut webkit_error);
+            return;
+        }
+    };
+
+    serve_other_url(request, format!("http://{cid}.ipfs.localhost:8080/{path}"));
+}
+
+#[tokio::main]
+async fn main() {
     gtk::init().unwrap();
 
     let window = Window::new(WindowType::Toplevel);

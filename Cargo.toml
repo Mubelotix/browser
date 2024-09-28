@@ -6,4 +6,7 @@ edition = "2021"
 [dependencies]
 gtk = "0.18.1"
 javascriptcore = "0.0.6"
+libipld = { version = "0.16.0", default-features = false }
+reqwest = { version = "0.12.7", default-features = false, features = ["stream"] }
+tokio = { version = "1.40.0", default-features = false, features = ["macros", "rt-multi-thread"] }
 webkit2gtk = { version = "2.0.1", features = ["v2_40"] }
