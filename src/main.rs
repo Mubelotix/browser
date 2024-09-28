@@ -1,6 +1,6 @@
 use std::sync::LazyLock;
 use gtk::gio::MemoryInputStream;
-use gtk::glib::FileError;
+use gtk::glib::{FileError, MainContext};
 use gtk::{prelude::*, Entry, Box, Orientation, Window, WindowType};
 use libipld::Cid;
 use reqwest::Client;
@@ -30,7 +30,8 @@ impl UriSchemeRequestSafe {
 
 fn serve_other_url(request: &URISchemeRequest, url: String) {
     let request = UriSchemeRequestSafe(request.clone());
-    tokio::spawn(async move {
+
+    MainContext::default().spawn(async move {
         // TODO: Pass useful headers like range, etc.
         
         let response = CLIENT.get(url).send().await;
