@@ -89,6 +89,16 @@ fn serve_ipfs(request: &URISchemeRequest) {
     serve_other_url(request, format!("http://{cid}.ipfs.localhost:8080/{path}"));
 }
 
+fn serve_ipns(request: &URISchemeRequest) {
+    let uri = request.uri().unwrap_or_default();
+    let value = match uri.starts_with("ipns://") {
+        true => uri[7..].to_string(),
+        false => uri.to_string(),
+    };
+    let (domain, path) = value.split_once('/').unwrap_or((value.as_str(), ""));
+    serve_other_url(request, format!("http://{domain}.ipns.localhost:8080/{path}"));
+}
+
 #[tokio::main]
 async fn main() {
     gtk::init().unwrap();
@@ -98,6 +108,7 @@ async fn main() {
     context.set_web_extensions_initialization_user_data(&"webkit".to_variant());
     context.set_web_extensions_directory("../webkit2gtk-webextension-rs/example/target/debug/");
     context.register_uri_scheme("ipfs", serve_ipfs);
+    context.register_uri_scheme("ipns", serve_ipns);
     let webview = WebView::new_with_context_and_user_content_manager(&context, &UserContentManager::new());
     webview.load_uri("ipfs://QmbsGZ999Xk757uSGFMbFW2xW4F21CbGvmpx8A5JwP5Y5s");
 
