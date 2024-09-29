@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::LazyLock;
 use gtk::builders::StackBuilder;
 use gtk::gio::MemoryInputStream;
@@ -106,7 +107,8 @@ fn serve_ipns(request: &URISchemeRequest) {
 
 struct Browser {
     context: WebContext,
-    webviews: Vec<WebView>,
+    webviews: HashMap<u32, WebView>,
+    counter: u32,
 
     // Widgets
     vbox: Box,
@@ -136,6 +138,7 @@ impl Browser {
             .build();
 
         let tab_switcher = StackSwitcher::builder()
+            .orientation(Orientation::Vertical)
             .stack(&tab_stack)
             .build();      
 
@@ -144,7 +147,8 @@ impl Browser {
 
         Browser {
             context,
-            webviews: Vec::new(),
+            webviews: HashMap::new(),
+            counter: 0,
             vbox,
             tab_stack,
             tab_switcher,
@@ -152,26 +156,28 @@ impl Browser {
     }
 
     fn open_tab(&mut self, uri: &str) {
+        let id = self.counter;
+        self.counter += 1;
+
         let webview = WebView::new_with_context_and_user_content_manager(&self.context, &UserContentManager::new());
         webview.load_uri(uri);
 
         webview.set_hexpand(true);
         webview.set_vexpand(true);
-        self.tab_stack.add(&webview);
+        self.tab_stack.add_named(&webview, &id.to_string());
 
         let tab_name_text_buffer = TextBuffer::builder()
-            .text("tab_name")
+            .text(uri)
             .build();
         let tab_name_widget = TextView::builder()
             .buffer(&tab_name_text_buffer)
             .build();
         self.tab_switcher.add(&tab_name_widget);
 
-
         let settings = WebViewExt::settings(&webview).unwrap();
         settings.set_enable_developer_extras(true);
         
-        self.webviews.push(webview);
+        self.webviews.insert(id, webview);
     }
 }
 
@@ -184,6 +190,7 @@ async fn main() {
 
     let mut browser = Browser::new(&window);
     browser.open_tab("ipns://ipfs.tech");
+    browser.open_tab("https://google.com");
 
     // webview.connect_decide_policy(|_, decision, ty| {
     //     println!("{ty:?}");
