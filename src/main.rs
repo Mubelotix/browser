@@ -4,12 +4,16 @@ use gtk::glib::{FileError, MainContext};
 use gtk::{prelude::*, Entry, Box, Orientation, Window, WindowType};
 use libipld::Cid;
 use reqwest::Client;
-use webkit2gtk::{PolicyDecisionExt, SecurityManagerExt, SettingsExt, URISchemeRequest, URISchemeRequestExt, WebContext, WebContextExt, WebView, WebViewExt};
+use webkit2gtk::{NavigationPolicyDecision, NavigationPolicyDecisionExt, PolicyDecision, PolicyDecisionExt, PolicyDecisionType, SecurityManagerExt, SettingsExt, URIRequestExt, URISchemeRequest, URISchemeRequestExt, WebContext, WebContextExt, WebView, WebViewExt};
 use webkit2gtk::{UserContentManager, WebViewExtManual};
 use webkit2gtk::{glib, gio};
 
 static CLIENT: LazyLock<Client> = LazyLock::new(|| {
     Client::new()
+});
+
+static I2P_CLIENT: LazyLock<Client> = LazyLock::new(|| {
+    Client::builder().proxy(reqwest::Proxy::all("http://127.0.0.1:4444").unwrap()).build().unwrap()
 });
 
 // The guys from Tauri do it so I guess it's safe
@@ -28,10 +32,10 @@ impl UriSchemeRequestSafe {
     }
 }
 
-async fn fetch_url(url: String) -> Result<(glib::Bytes, i64, Option<String>), webkit2gtk::Error> {
+async fn fetch_url(url: String, client: &'static LazyLock<Client>) -> Result<(glib::Bytes, i64, Option<String>), webkit2gtk::Error> {
     // TODO: Pass useful headers like range, etc.
             
-    let response = CLIENT.get(url).send().await;
+    let response = client.get(url).send().await;
     let response = match response {
         Ok(response) => response,
         Err(error) => return Err(webkit2gtk::Error::new(FileError::Failed, &format!("{error}: {error:?}"))),
@@ -50,10 +54,10 @@ async fn fetch_url(url: String) -> Result<(glib::Bytes, i64, Option<String>), we
     Ok((glib::Bytes::from_owned(bytes), len, content_type))
 }
 
-fn serve_other_url(request: &URISchemeRequest, url: String) {
+fn serve_other_url(request: &URISchemeRequest, url: String, client: &'static LazyLock<Client>) {
     let request = UriSchemeRequestSafe(request.clone());
     tokio::spawn(async move {
-        let result = fetch_url(url).await;
+        let result = fetch_url(url, client).await;
         MainContext::default().invoke(move || {
             match result {
                 Ok((bytes, len, content_type)) => {
@@ -68,11 +72,11 @@ fn serve_other_url(request: &URISchemeRequest, url: String) {
 
 fn serve_ipfs(request: &URISchemeRequest) {
     let uri = request.uri().unwrap_or_default();
-    let value = match uri.starts_with("ipfs://") {
-        true => uri[7..].to_string(),
-        false => uri.to_string(),
+    let schemaless_uri = match uri.strip_prefix("ipfs://") {
+        Some(schemaless_uri) => schemaless_uri.to_string(),
+        None => uri.to_string(),
     };
-    let (cid, path) = value.split_once('/').unwrap_or((value.as_str(), ""));
+    let (cid, path) = schemaless_uri.split_once('/').unwrap_or((schemaless_uri.as_str(), ""));
     let cid = match Cid::try_from(cid) {
         Ok(cid) => cid,
         Err(error) => {
@@ -90,17 +94,58 @@ fn serve_ipfs(request: &URISchemeRequest) {
         }
     };
 
-    serve_other_url(request, format!("http://{cid}.ipfs.localhost:8080/{path}"));
+    serve_other_url(request, format!("http://{cid}.ipfs.localhost:8080/{path}"), &CLIENT);
 }
 
 fn serve_ipns(request: &URISchemeRequest) {
     let uri = request.uri().unwrap_or_default();
-    let value = match uri.starts_with("ipns://") {
-        true => uri[7..].to_string(),
-        false => uri.to_string(),
+    let schemaless_uri = match uri.strip_prefix("ipns://") {
+        Some(schemaless_uri) => schemaless_uri.to_string(),
+        None => uri.to_string(),
     };
-    let (domain, path) = value.split_once('/').unwrap_or((value.as_str(), ""));
-    serve_other_url(request, format!("http://{domain}.ipns.localhost:8080/{path}"));
+    let (domain, path) = schemaless_uri.split_once('/').unwrap_or((schemaless_uri.as_str(), ""));
+    serve_other_url(request, format!("http://{domain}.ipns.localhost:8080/{path}"), &CLIENT);
+}
+
+fn serve_i2p(request: &URISchemeRequest) {
+    let uri = request.uri().unwrap_or_default();
+    let schemaless_uri = match uri.strip_prefix("i2p://") {
+        Some(schemaless_uri) => schemaless_uri.to_string(),
+        None => uri.to_string(),
+    };
+    serve_other_url(request, format!("http://{schemaless_uri}"), &I2P_CLIENT);
+}
+
+fn redirect_special_sites(webview: &WebView, decision: &PolicyDecision, ty: PolicyDecisionType) -> bool {
+    if ty != PolicyDecisionType::NavigationAction {
+        return false;
+    }
+
+    let decision = decision.clone().downcast::<NavigationPolicyDecision>().unwrap();
+    let Some(action) = decision.navigation_action() else {return false};
+    let Some(request) = action.request() else {return false};
+    let Some(uri) = request.uri() else {return false};
+
+    let schemeless_uri = if let Some(schemeless_uri) = uri.strip_prefix("https://") {
+        schemeless_uri
+    } else if let Some(schemeless_uri) = uri.strip_prefix("http://") {
+        schemeless_uri
+    } else {
+        return false;
+    };
+
+    let (domain, _path) = schemeless_uri.split_once('/').unwrap_or((schemeless_uri, ""));
+
+    if domain.ends_with(".i2p") {
+        webview.load_uri(&format!("i2p://{schemeless_uri}"));
+    } else if domain.ends_with(".onion") {
+        webview.load_uri(&format!("tor://{schemeless_uri}"));
+    } else {
+        return false;
+    }
+
+    decision.ignore();
+    true
 }
 
 #[tokio::main]
@@ -113,19 +158,27 @@ async fn main() {
     context.set_web_extensions_directory("../webkit2gtk-webextension-rs/example/target/debug/");
     context.register_uri_scheme("ipfs", serve_ipfs);
     context.register_uri_scheme("ipns", serve_ipns);
+    context.register_uri_scheme("i2p", serve_i2p);
     let security_manager = context.security_manager().unwrap();
     security_manager.register_uri_scheme_as_secure("ipfs");
     security_manager.register_uri_scheme_as_secure("ipns");
+    security_manager.register_uri_scheme_as_secure("i2p");
     security_manager.register_uri_scheme_as_cors_enabled("ipfs");
     security_manager.register_uri_scheme_as_cors_enabled("ipns");
     let webview = WebView::new_with_context_and_user_content_manager(&context, &UserContentManager::new());
     webview.load_uri("ipns://ipfs.tech");
 
-    // webview.connect_decide_policy(|_, decision, ty| {
-    //     println!("{ty:?}");
-    //     decision.use_();
-    //     true
-    // });
+    webview.connect_decide_policy(|webview, decision, ty| {
+        if redirect_special_sites(webview, decision, ty) {
+            println!("Redirected");
+            return true;
+        }
+
+        let uri = webview.uri();
+        println!("{ty:?} to {uri:?}");
+        decision.use_();
+        true
+    });
 
     let vbox = Box::new(Orientation::Vertical, 0);
     vbox.set_hexpand(true);
