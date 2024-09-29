@@ -166,11 +166,16 @@ impl Browser {
         webview.set_vexpand(true);
         self.tab_stack.add_named(&webview, &id.to_string());
 
-        let tab_name_text_buffer = TextBuffer::builder()
+        let tab_title_text_buffer = TextBuffer::builder()
             .text(uri)
             .build();
+        let tab_title_text_buffer2 = tab_title_text_buffer.clone();
+        webview.connect_title_notify(move |webview| {
+            let new_title = webview.title().unwrap_or_default();
+            tab_title_text_buffer2.set_text(&new_title);
+        });
         let tab_name_widget = TextView::builder()
-            .buffer(&tab_name_text_buffer)
+            .buffer(&tab_title_text_buffer)
             .build();
         self.tab_switcher.add(&tab_name_widget);
 
