@@ -104,6 +104,77 @@ fn serve_ipns(request: &URISchemeRequest) {
     serve_other_url(request, format!("http://{domain}.ipns.localhost:8080/{path}"));
 }
 
+struct Browser {
+    context: WebContext,
+    webviews: Vec<WebView>,
+
+    // Widgets
+    vbox: Box,
+    tab_stack: Stack,
+    tab_switcher: StackSwitcher,
+}
+
+impl Browser {
+    fn new(window: &Window) -> Self {
+        let context = WebContext::default().unwrap();
+        context.set_web_extensions_initialization_user_data(&"webkit".to_variant());
+        context.set_web_extensions_directory("../webkit2gtk-webextension-rs/example/target/debug/");
+        context.register_uri_scheme("ipfs", serve_ipfs);
+        context.register_uri_scheme("ipns", serve_ipns);
+        let security_manager = context.security_manager().unwrap();
+        security_manager.register_uri_scheme_as_secure("ipfs");
+        security_manager.register_uri_scheme_as_secure("ipns");
+        security_manager.register_uri_scheme_as_cors_enabled("ipfs");
+        security_manager.register_uri_scheme_as_cors_enabled("ipns");
+
+        let vbox = Box::new(Orientation::Horizontal, 0);
+        vbox.set_hexpand(true);
+        vbox.set_vexpand(true);
+        window.add(&vbox);
+
+        let tab_stack = Stack::builder()
+            .build();
+
+        let tab_switcher = StackSwitcher::builder()
+            .stack(&tab_stack)
+            .build();      
+
+        vbox.pack_start(&tab_switcher, false, false, 0);
+        vbox.pack_start(&tab_stack, true, true, 0);
+
+        Browser {
+            context,
+            webviews: Vec::new(),
+            vbox,
+            tab_stack,
+            tab_switcher,
+        }
+    }
+
+    fn open_tab(&mut self, uri: &str) {
+        let webview = WebView::new_with_context_and_user_content_manager(&self.context, &UserContentManager::new());
+        webview.load_uri(uri);
+
+        webview.set_hexpand(true);
+        webview.set_vexpand(true);
+        self.tab_stack.add(&webview);
+
+        let tab_name_text_buffer = TextBuffer::builder()
+            .text("tab_name")
+            .build();
+        let tab_name_widget = TextView::builder()
+            .buffer(&tab_name_text_buffer)
+            .build();
+        self.tab_switcher.add(&tab_name_widget);
+
+
+        let settings = WebViewExt::settings(&webview).unwrap();
+        settings.set_enable_developer_extras(true);
+        
+        self.webviews.push(webview);
+    }
+}
+
 #[tokio::main]
 async fn main() {
     gtk::init().unwrap();
@@ -111,58 +182,14 @@ async fn main() {
     let window = Window::new(WindowType::Toplevel);
     window.set_decorated(false);
 
-    let context = WebContext::default().unwrap();
-    context.set_web_extensions_initialization_user_data(&"webkit".to_variant());
-    context.set_web_extensions_directory("../webkit2gtk-webextension-rs/example/target/debug/");
-    context.register_uri_scheme("ipfs", serve_ipfs);
-    context.register_uri_scheme("ipns", serve_ipns);
-    let security_manager = context.security_manager().unwrap();
-    security_manager.register_uri_scheme_as_secure("ipfs");
-    security_manager.register_uri_scheme_as_secure("ipns");
-    security_manager.register_uri_scheme_as_cors_enabled("ipfs");
-    security_manager.register_uri_scheme_as_cors_enabled("ipns");
-    let webview = WebView::new_with_context_and_user_content_manager(&context, &UserContentManager::new());
-    webview.load_uri("ipns://ipfs.tech");
+    let mut browser = Browser::new(&window);
+    browser.open_tab("ipns://ipfs.tech");
 
     // webview.connect_decide_policy(|_, decision, ty| {
     //     println!("{ty:?}");
     //     decision.use_();
     //     true
     // });
-
-
-    let vbox = Box::new(Orientation::Horizontal, 0);
-    vbox.set_hexpand(true);
-    vbox.set_vexpand(true);
-    window.add(&vbox);
-
-    let tab_stack = Stack::builder()
-        .child(&webview)
-        .build();
-
-    let tab_name = "Tab 1";
-    tab_stack.set_visible_child_name(tab_name);
-
-    let tab_name_text_buffer = TextBuffer::builder()
-        .text(tab_name)
-        .build();
-
-    let tab_name_widget = TextView::builder()
-        .buffer(&tab_name_text_buffer)
-        .build();
-
-    let tab_switcher = StackSwitcher::builder()
-        .stack(&tab_stack)
-        .child(&tab_name_widget)
-        .build();
-    vbox.pack_start(&tab_switcher, false, false, 0);
-    
-    webview.set_hexpand(true);
-    webview.set_vexpand(true);
-    vbox.pack_start(&tab_stack, true, true, 0);
-
-    let settings = WebViewExt::settings(&webview).unwrap();
-    settings.set_enable_developer_extras(true);
 
     /*let inspector = webview.get_inspector().unwrap();
     inspector.show();*/
