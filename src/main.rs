@@ -28,39 +28,44 @@ impl UriSchemeRequestSafe {
     }
 }
 
+async fn fetch_url(url: String) -> Result<(glib::Bytes, i64, Option<String>), webkit2gtk::Error> {
+    // TODO: Pass useful headers like range, etc.
+            
+    let response = CLIENT.get(url).send().await;
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => return Err(webkit2gtk::Error::new(FileError::Failed, &format!("{error}: {error:?}"))),
+    };
+
+    // TODO: Someday we might be able to implement PollableInputStream and use streams
+    // let stream = response.bytes_stream();
+
+    let content_type = response.headers().get("content-type").and_then(|value| value.to_str().ok()).map(|s| s.to_string());
+    let bytes = match response.bytes().await {
+        Ok(bytes) => bytes,
+        Err(error) => return Err(webkit2gtk::Error::new(FileError::Failed, &format!("{error}: {error:?}"))),
+    };
+    let len = bytes.len() as i64;
+
+    Ok((glib::Bytes::from_owned(bytes), len, content_type))
+}
+
 fn serve_other_url(request: &URISchemeRequest, url: String) {
     let request = UriSchemeRequestSafe(request.clone());
-
-    MainContext::default().spawn(async move {
-        // TODO: Pass useful headers like range, etc.
-        
-        let response = CLIENT.get(url).send().await;
-        let response = match response {
-            Ok(response) => response,
-            Err(error) => {
-                let mut webkit_error = webkit2gtk::Error::new(FileError::Failed, &format!("{error}: {error:?}"));
-                request.finish_error(&mut webkit_error);
-                return;
+    tokio::spawn(async move {
+        let result = fetch_url(url).await;
+        MainContext::default().invoke(move || {
+            match result {
+                Ok((bytes, len, content_type)) => {
+                    let input_stream = MemoryInputStream::from_bytes(&glib::Bytes::from_owned(bytes));
+                    request.finish(&input_stream, len, content_type.as_deref());
+                }
+                Err(error) => {
+                    request.finish_error(&mut error.clone());
+                }
             }
-        };
-
-        // TODO: Someday we might be able to implement PollableInputStream and use streams
-        // let stream = response.bytes_stream();
-
-        let content_type = response.headers().get("content-type").and_then(|value| value.to_str().ok()).map(|s| s.to_string());
-        let bytes = match response.bytes().await {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                let mut webkit_error = webkit2gtk::Error::new(FileError::Failed, &format!("{error}: {error:?}"));
-                request.finish_error(&mut webkit_error);
-                return;
-            }
-        };
-        let len = bytes.len() as i64;
-        let input_stream = MemoryInputStream::from_bytes(&glib::Bytes::from_owned(bytes));
-
-        request.finish(&input_stream, len, content_type.as_deref());
-    });
+        });
+    });   
 }
 
 fn serve_ipfs(request: &URISchemeRequest) {
