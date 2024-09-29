@@ -4,7 +4,7 @@ use gtk::glib::{FileError, MainContext};
 use gtk::{prelude::*, Entry, Box, Orientation, Window, WindowType};
 use libipld::Cid;
 use reqwest::Client;
-use webkit2gtk::{SecurityManagerExt, SettingsExt, URISchemeRequest, URISchemeRequestExt, WebContext, WebContextExt, WebView, WebViewExt};
+use webkit2gtk::{PolicyDecisionExt, SecurityManagerExt, SettingsExt, URISchemeRequest, URISchemeRequestExt, WebContext, WebContextExt, WebView, WebViewExt};
 use webkit2gtk::{UserContentManager, WebViewExtManual};
 use webkit2gtk::{glib, gio};
 
@@ -116,8 +116,16 @@ async fn main() {
     let security_manager = context.security_manager().unwrap();
     security_manager.register_uri_scheme_as_secure("ipfs");
     security_manager.register_uri_scheme_as_secure("ipns");
+    security_manager.register_uri_scheme_as_cors_enabled("ipfs");
+    security_manager.register_uri_scheme_as_cors_enabled("ipns");
     let webview = WebView::new_with_context_and_user_content_manager(&context, &UserContentManager::new());
-    webview.load_uri("ipfs://QmbsGZ999Xk757uSGFMbFW2xW4F21CbGvmpx8A5JwP5Y5s");
+    webview.load_uri("ipns://ipfs.tech");
+
+    // webview.connect_decide_policy(|_, decision, ty| {
+    //     println!("{ty:?}");
+    //     decision.use_();
+    //     true
+    // });
 
     let vbox = Box::new(Orientation::Vertical, 0);
     vbox.set_hexpand(true);
