@@ -1,7 +1,8 @@
 use std::sync::LazyLock;
+use gtk::builders::StackBuilder;
 use gtk::gio::MemoryInputStream;
 use gtk::glib::{FileError, MainContext};
-use gtk::{prelude::*, Entry, Box, Orientation, Window, WindowType};
+use gtk::{prelude::*, Box, Entry, Orientation, Stack, StackSwitcher, TextBuffer, TextView, Window, WindowType};
 use libipld::Cid;
 use reqwest::Client;
 use webkit2gtk::{PolicyDecisionExt, SecurityManagerExt, SettingsExt, URISchemeRequest, URISchemeRequestExt, WebContext, WebContextExt, WebView, WebViewExt};
@@ -129,19 +130,36 @@ async fn main() {
     //     true
     // });
 
-    let vbox = Box::new(Orientation::Vertical, 0);
+
+    let vbox = Box::new(Orientation::Horizontal, 0);
     vbox.set_hexpand(true);
     vbox.set_vexpand(true);
     window.add(&vbox);
-    
-    let url_bar = Entry::new();
-    url_bar.set_text(webview.uri().unwrap().as_str());
-    url_bar.set_hexpand(true);
-    vbox.pack_start(&url_bar, false, false, 0);
+
+    let tab_stack = Stack::builder()
+        .child(&webview)
+        .build();
+
+    let tab_name = "Tab 1";
+    tab_stack.set_visible_child_name(tab_name);
+
+    let tab_name_text_buffer = TextBuffer::builder()
+        .text(tab_name)
+        .build();
+
+    let tab_name_widget = TextView::builder()
+        .buffer(&tab_name_text_buffer)
+        .build();
+
+    let tab_switcher = StackSwitcher::builder()
+        .stack(&tab_stack)
+        .child(&tab_name_widget)
+        .build();
+    vbox.pack_start(&tab_switcher, false, false, 0);
     
     webview.set_hexpand(true);
     webview.set_vexpand(true);
-    vbox.pack_start(&webview, true, true, 0);
+    vbox.pack_start(&tab_stack, true, true, 0);
 
     let settings = WebViewExt::settings(&webview).unwrap();
     settings.set_enable_developer_extras(true);
@@ -149,17 +167,17 @@ async fn main() {
     /*let inspector = webview.get_inspector().unwrap();
     inspector.show();*/
     
-    let webview2 = webview.clone();
-    let url_bar2 = url_bar.clone();
-    url_bar.connect_activate(move |_| {
-        let url = url_bar2.text();
-        webview2.load_uri(&url);
-    });
+    // let webview2 = webview.clone();
+    // let url_bar2 = url_bar.clone();
+    // url_bar.connect_activate(move |_| {
+    //     let url = url_bar2.text();
+    //     webview2.load_uri(&url);
+    // });
 
-    webview.connect_uri_notify(move |webview| {
-        let uri = webview.uri().unwrap();
-        url_bar.set_text(uri.as_str());
-    });
+    // webview.connect_uri_notify(move |webview| {
+    //     let uri = webview.uri().unwrap();
+    //     url_bar.set_text(uri.as_str());
+    // });
 
     // Get the screen size
     let display = window.display();
