@@ -1,12 +1,13 @@
 use std::collections::HashMap;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use gtk::builders::StackBuilder;
 use gtk::gio::MemoryInputStream;
 use gtk::glib::{FileError, MainContext};
-use gtk::{prelude::*, Box, Entry, Orientation, Stack, StackSwitcher, TextBuffer, TextView, Window, WindowType};
+use gtk::{prelude::*, Box as GtkBox, Button, Entry, Label, Orientation, Stack, StackSwitcher, TextBuffer, TextView, Window, WindowType};
 use libipld::Cid;
 use reqwest::Client;
-use webkit2gtk::{PolicyDecisionExt, SecurityManagerExt, SettingsExt, URISchemeRequest, URISchemeRequestExt, WebContext, WebContextExt, WebView, WebViewExt};
+use tokio::sync::RwLock;
+use webkit2gtk::{NavigationPolicyDecision, NavigationPolicyDecisionExt, PolicyDecisionExt, PolicyDecisionType, SecurityManagerExt, SettingsExt, URIRequestExt, URISchemeRequest, URISchemeRequestExt, WebContext, WebContextExt, WebView, WebViewExt};
 use webkit2gtk::{UserContentManager, WebViewExtManual};
 use webkit2gtk::{glib, gio};
 
@@ -105,15 +106,34 @@ fn serve_ipns(request: &URISchemeRequest) {
     serve_other_url(request, format!("http://{domain}.ipns.localhost:8080/{path}"));
 }
 
-struct Browser {
+struct BrowserInner {
     context: WebContext,
     webviews: HashMap<u32, WebView>,
     counter: u32,
 
     // Widgets
-    vbox: Box,
+    vbox: GtkBox,
     tab_stack: Stack,
     tab_switcher: StackSwitcher,
+}
+
+struct Browser {
+    inner: Arc<RwLock<BrowserInner>>,
+}
+
+struct SafeBrowser(&'static Browser);
+unsafe impl Send for SafeBrowser {}
+unsafe impl Sync for SafeBrowser {}
+impl AsRef<Browser> for SafeBrowser {
+    fn as_ref(&self) -> &Browser {
+        self.0
+    }
+}
+impl std::ops::Deref for SafeBrowser {
+    type Target = Browser;
+    fn deref(&self) -> &Self::Target {
+        self.0
+    }
 }
 
 impl Browser {
@@ -129,7 +149,7 @@ impl Browser {
         security_manager.register_uri_scheme_as_cors_enabled("ipfs");
         security_manager.register_uri_scheme_as_cors_enabled("ipns");
 
-        let vbox = Box::new(Orientation::Horizontal, 0);
+        let vbox = GtkBox::new(Orientation::Horizontal, 0);
         vbox.set_hexpand(true);
         vbox.set_vexpand(true);
         window.add(&vbox);
@@ -140,49 +160,77 @@ impl Browser {
         let tab_switcher = StackSwitcher::builder()
             .orientation(Orientation::Vertical)
             .stack(&tab_stack)
-            .build();      
+            .build();
+        tab_switcher.set_vexpand(true);
+        tab_switcher.set_hexpand(false);
 
         vbox.pack_start(&tab_switcher, false, false, 0);
         vbox.pack_start(&tab_stack, true, true, 0);
 
-        Browser {
+        let inner = BrowserInner {
             context,
             webviews: HashMap::new(),
             counter: 0,
             vbox,
             tab_stack,
             tab_switcher,
+        };
+
+        Self {
+            inner: Arc::new(RwLock::new(inner)),
         }
     }
 
-    fn open_tab(&mut self, uri: &str) {
-        let id = self.counter;
-        self.counter += 1;
+    async fn open_tab(&'static self, uri: &str) {
+        let mut browser = self.inner.write().await;
 
-        let webview = WebView::new_with_context_and_user_content_manager(&self.context, &UserContentManager::new());
+        let id = browser.counter;
+        browser.counter += 1;
+
+        let webview = WebView::new_with_context_and_user_content_manager(&browser.context, &UserContentManager::new());
         webview.load_uri(uri);
-
         webview.set_hexpand(true);
         webview.set_vexpand(true);
-        self.tab_stack.add_named(&webview, &id.to_string());
-
-        let tab_title_text_buffer = TextBuffer::builder()
-            .text(uri)
-            .build();
-        let tab_title_text_buffer2 = tab_title_text_buffer.clone();
-        webview.connect_title_notify(move |webview| {
-            let new_title = webview.title().unwrap_or_default();
-            tab_title_text_buffer2.set_text(&new_title);
-        });
-        let tab_name_widget = TextView::builder()
-            .buffer(&tab_title_text_buffer)
-            .build();
-        self.tab_switcher.add(&tab_name_widget);
+        browser.tab_stack.add_named(&webview, &id.to_string());
 
         let settings = WebViewExt::settings(&webview).unwrap();
         settings.set_enable_developer_extras(true);
+
+        let tab_button = Button::new();
+        let tab_button_box = GtkBox::new(Orientation::Horizontal, 0);
+        tab_button_box.set_hexpand(true);
+        tab_button.add(&tab_button_box);
+        let tab_button_label = Label::new(Some(uri));
+        tab_button_box.pack_start(&tab_button_label, true, false, 0);
+        let tab_button_close = Button::with_label("Close");
+        tab_button_box.pack_end(&tab_button_close, false, false, 0);
+
+        webview.connect_title_notify(move |webview| {
+            let title = webview.title().unwrap_or_default();
+            tab_button_label.set_text(&title);
+        });
+
+        webview.connect_decide_policy(move |_, decision, ty| {
+            if ty == PolicyDecisionType::NewWindowAction {
+                let navigation_decision = decision.clone().downcast::<NavigationPolicyDecision>().unwrap();
+                let Some(navigation_action) = navigation_decision.navigation_action() else {return false};
+                let Some(request) = navigation_action.request() else {return false};
+                let Some(uri) = request.uri() else {return false};
+                let uri = uri.to_string();
+                let safe_self = SafeBrowser(self);
+                tokio::spawn(async move {
+                    safe_self.open_tab(&uri)
+                });
+                decision.ignore();
+                true
+            } else {
+                false
+            }
+        });
+
+        browser.tab_switcher.add(&tab_button);
         
-        self.webviews.insert(id, webview);
+        browser.webviews.insert(id, webview);
     }
 }
 
@@ -193,7 +241,8 @@ async fn main() {
     let window = Window::new(WindowType::Toplevel);
     window.set_decorated(false);
 
-    let mut browser = Browser::new(&window);
+    let browser = Box::new(Browser::new(&window));
+    let mut browser = Box::leak(browser);
     browser.open_tab("ipns://ipfs.tech");
     browser.open_tab("https://google.com");
 
