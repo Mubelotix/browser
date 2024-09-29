@@ -60,9 +60,7 @@ fn serve_other_url(request: &URISchemeRequest, url: String) {
                     let input_stream = MemoryInputStream::from_bytes(&glib::Bytes::from_owned(bytes));
                     request.finish(&input_stream, len, content_type.as_deref());
                 }
-                Err(error) => {
-                    request.finish_error(&mut error.clone());
-                }
+                Err(error) => request.finish_error(&mut error.clone()),
             }
         });
     });   
