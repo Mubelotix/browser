@@ -108,6 +108,8 @@ async fn main() {
     gtk::init().unwrap();
 
     let window = Window::new(WindowType::Toplevel);
+    window.set_decorated(false);
+
     let context = WebContext::default().unwrap();
     context.set_web_extensions_initialization_user_data(&"webkit".to_variant());
     context.set_web_extensions_directory("../webkit2gtk-webextension-rs/example/target/debug/");
@@ -130,6 +132,7 @@ async fn main() {
     let vbox = Box::new(Orientation::Vertical, 0);
     vbox.set_hexpand(true);
     vbox.set_vexpand(true);
+    window.add(&vbox);
     
     let url_bar = Entry::new();
     url_bar.set_text(webview.uri().unwrap().as_str());
@@ -139,33 +142,12 @@ async fn main() {
     webview.set_hexpand(true);
     webview.set_vexpand(true);
     vbox.pack_start(&webview, true, true, 0);
-    
-    window.add(&vbox);
 
     let settings = WebViewExt::settings(&webview).unwrap();
     settings.set_enable_developer_extras(true);
 
     /*let inspector = webview.get_inspector().unwrap();
     inspector.show();*/
-
-    window.show_all();
-
-    //webview.evaluate_javascript("alert('Hello');", None, None, None::<&gio::Cancellable>, |_result| {});
-    // webview.evaluate_javascript("42", None, None, None, |result| match result {
-    //     Ok(result) => {
-    //         let value = result.js_value().unwrap();
-    //         println!("is_boolean: {}", value.is_boolean());
-    //         println!("is_number: {}", value.is_number());
-    //         println!("{:?}", value.to_int32());
-    //         println!("{:?}", value.to_boolean());
-    //     }
-    //     Err(error) => println!("{}", error),
-    // });
-
-    window.connect_delete_event(|_, _| {
-        gtk::main_quit();
-        glib::Propagation::Proceed
-    });
     
     let webview2 = webview.clone();
     let url_bar2 = url_bar.clone();
@@ -177,6 +159,22 @@ async fn main() {
     webview.connect_uri_notify(move |webview| {
         let uri = webview.uri().unwrap();
         url_bar.set_text(uri.as_str());
+    });
+
+    // Get the screen size
+    let display = window.display();
+    let monitor = display.primary_monitor().unwrap_or_else(|| display.monitor(0).unwrap());
+    let geometry = monitor.geometry();
+    let width = geometry.width();
+    let height = geometry.height();
+
+    // Set the window size to the screen size
+    window.set_default_size(width, height);
+    window.show_all();
+
+    window.connect_delete_event(|_, _| {
+        gtk::main_quit();
+        glib::Propagation::Proceed
     });
 
     gtk::main();
