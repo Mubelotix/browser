@@ -1,3 +1,5 @@
+This was a quick experiment to see how easy it would be to create a webkit-based browser featuring first-class support of the IPFS, I2P and TOR protocols.
+
 ## Requirements
 
 ```
